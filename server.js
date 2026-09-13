@@ -6,9 +6,6 @@ const {Pool}=require('pg');
 const path=require('path');
 
 const app=express();
-// Railway работает через reverse proxy. Доверяем proxy,
-// чтобы secure-сессии корректно сохранялись по HTTPS.
-app.set('trust proxy', 1);
 const PORT=process.env.PORT||3000;
 const pool=new Pool({connectionString:process.env.DATABASE_URL,ssl:process.env.DATABASE_URL?{rejectUnauthorized:false}:false});
 const ROLES={
@@ -16,7 +13,7 @@ const ROLES={
  admin:{name:'Администратор',p:['users','treasury','warehouse','operations','view']},
  cashier:{name:'Кассир',p:['treasury','operations','view']},
  warehouse:{name:'Кладовщик',p:['warehouse','view']},
- member:{name:'Участник',p:['view']}
+ member:{name:'Участник',p:['view','member_expense','profile']}
 };
 
 app.use(express.json());
@@ -88,10 +85,7 @@ app.post('/api/login',async(req,res,next)=>{
   const u=q.rows[0];
   if(!u||!u.active||!bcrypt.compareSync(password,u.password_hash))return res.status(401).json({error:'Неверный логин или пароль'});
   req.session.userId=u.id;
-  req.session.save(err=>{
-    if(err)return next(err);
-    res.json({user:safe(u)});
-  });
+  res.json({user:safe(u)});
  }catch(e){next(e)}
 });
 app.post('/api/logout',(req,res)=>req.session.destroy(()=>res.json({ok:true})));
@@ -102,7 +96,8 @@ app.get('/api/dashboard',auth,async(req,res,next)=>{
   const s=await pool.query('SELECT * FROM settings WHERE id=1');
   const sums=await pool.query(`SELECT
     COALESCE(SUM(amount) FILTER(WHERE type='income'),0) income,
-    COALESCE(SUM(amount) FILTER(WHERE type='expense'),0) expenses
+    COALESCE(SUM(amount) FILTER(WHERE type='expense'),0) expenses,
+    COALESCE(SUM(amount) FILTER(WHERE type='income' AND created_at >= (date_trunc('week', now() AT TIME ZONE 'Europe/Moscow') + interval '6 hours') AT TIME ZONE 'Europe/Moscow'),0) weekly_income
     FROM operations`);
   const stock=await pool.query('SELECT COALESCE(SUM(qty*price),0) stock FROM warehouse');
   const ops=await pool.query('SELECT id,type,amount,note,by_username by,created_at at FROM operations ORDER BY id DESC LIMIT 100');
@@ -111,7 +106,7 @@ app.get('/api/dashboard',auth,async(req,res,next)=>{
   const income=Number(sums.rows[0].income),expenses=Number(sums.rows[0].expenses);
   res.json({
     treasury:Number(s.rows[0].treasury)+income-expenses,
-    weeklyIncome:Number(s.rows[0].weekly_income),income,expenses,
+    weeklyIncome:Number(sums.rows[0].weekly_income),totalIncome:income,income,expenses,
     stockValue:Number(stock.rows[0].stock),users:users.rows[0].count,
     operations:ops.rows,warehouse:wh.rows
   });
@@ -130,7 +125,9 @@ app.put('/api/settings',auth,allow('treasury'),async(req,res,next)=>{
  }catch(e){next(e)}
 });
 
-app.post('/api/operations',auth,allow('operations'),async(req,res,next)=>{
+app.post('/api/operations',auth,async(req,res,next)=>{
+ if(req.user.role==='member' && req.body.type!=='expense')return res.status(403).json({error:'Участник может добавлять только расходы'});
+ if(!ROLES[req.user.role]?.p.includes('operations') && req.user.role!=='member')return res.status(403).json({error:'Недостаточно прав'});
  try{
   const type=req.body.type,amount=Number(req.body.amount);
   if(!['income','expense'].includes(type)||!Number.isFinite(amount)||amount<=0)return res.status(400).json({error:'Укажи корректный тип и сумму'});
