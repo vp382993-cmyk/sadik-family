@@ -1,0 +1,20 @@
+{
+  "name": "sadik-family-shared-v3",
+  "version": "3.0.0",
+  "private": true,
+  "description": "SADIK Family shared treasury and warehouse with PostgreSQL",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "connect-pg-simple": "^10.0.0",
+    "express": "^4.21.2",
+    "express-session": "^1.18.1",
+    "pg": "^8.16.3"
+  }
+}
