@@ -69,6 +69,7 @@ async function init(){
  }
 }
 const safe=u=>({id:u.id,username:u.username,role:u.role,roleName:ROLES[u.role]?.name||u.role,active:u.active,createdAt:u.created_at});
+const canManageUser=(actor,target)=>actor.role==='owner' || (actor.role==='admin' && !['owner','admin'].includes(target.role));
 async function auth(req,res,next){
  try{
    const u=await pool.query('SELECT * FROM users WHERE id=$1 AND active=true',[req.session.userId]);
@@ -130,7 +131,7 @@ app.put('/api/settings',auth,allow('treasury'),async(req,res,next)=>{
 });
 
 app.post('/api/operations',auth,async(req,res,next)=>{
- if(req.user.role==='member' && req.body.type!=='expense')return res.status(403).json({error:'Участник может добавлять только расходы'});
+ if(req.user.role==='member' && req.body.type!=='income')return res.status(403).json({error:'Участник может добавлять только доходы'});
  if(!ROLES[req.user.role]?.p.includes('operations') && req.user.role!=='member')return res.status(403).json({error:'Недостаточно прав'});
  try{
   const type=req.body.type,amount=Number(req.body.amount);
@@ -156,11 +157,16 @@ app.delete('/api/warehouse/:id',auth,allow('warehouse'),async(req,res,next)=>{
 });
 
 app.get('/api/users',auth,allow('users'),async(req,res,next)=>{
- try{const q=await pool.query('SELECT * FROM users ORDER BY id');res.json(q.rows.map(safe))}catch(e){next(e)}
+ try{const q=await pool.query(`SELECT u.*, COUNT(o.id)::int operation_count
+ FROM users u LEFT JOIN operations o ON lower(o.by_username)=lower(u.username)
+ GROUP BY u.id ORDER BY u.created_at DESC, u.id DESC`);
+ res.json(q.rows.map(u=>({...safe(u),operationCount:u.operation_count})));
+ }catch(e){next(e)}
 });
 app.post('/api/users',auth,allow('users'),async(req,res,next)=>{
  try{
   const username=String(req.body.username||'').trim(),password=String(req.body.password||''),role=req.body.role;
+  if(req.user.role!=='owner' && ['owner','admin'].includes(role))return res.status(403).json({error:'Только владелец может создавать владельцев и администраторов'});
   if(!username||!password||!ROLES[role])return res.status(400).json({error:'Заполни логин, пароль и роль'});
   const exists=await pool.query('SELECT 1 FROM users WHERE lower(username)=lower($1)',[username]);
   if(exists.rowCount)return res.status(400).json({error:'Такой логин уже существует'});
@@ -174,6 +180,8 @@ app.patch('/api/users/:id',auth,allow('users'),async(req,res,next)=>{
   const id=Number(req.params.id),q=await pool.query('SELECT * FROM users WHERE id=$1',[id]);
   if(!q.rowCount)return res.status(404).json({error:'Пользователь не найден'});
   const u=q.rows[0];
+  if(id===req.user.id)return res.status(400).json({error:'Нельзя изменять самого себя через админку'});
+  if(!canManageUser(req.user,u))return res.status(403).json({error:'У вас нет прав управлять этой ролью'});
   if(req.body.role&&ROLES[req.body.role])u.role=req.body.role;
   if(typeof req.body.active==='boolean'&&id!==req.user.id)u.active=req.body.active;
   if(req.body.password)u.password_hash=bcrypt.hashSync(String(req.body.password),10);
@@ -182,6 +190,17 @@ app.patch('/api/users/:id',auth,allow('users'),async(req,res,next)=>{
  }catch(e){next(e)}
 });
 
+app.delete('/api/users/:id',auth,allow('users'),async(req,res,next)=>{
+ try{
+  const id=Number(req.params.id);
+  if(id===req.user.id)return res.status(400).json({error:'Нельзя удалить самого себя'});
+  const q=await pool.query('SELECT * FROM users WHERE id=$1',[id]);
+  if(!q.rowCount)return res.status(404).json({error:'Пользователь не найден'});
+  if(!canManageUser(req.user,q.rows[0]))return res.status(403).json({error:'Недостаточно прав для удаления'});
+  await pool.query('DELETE FROM users WHERE id=$1',[id]);
+  res.json({ok:true});
+ }catch(e){next(e)}
+});
 app.get('/health',(req,res)=>res.json({ok:true}));
 app.get('*',(req,res)=>res.sendFile(path.join(__dirname,'public','index.html')));
 app.use((err,req,res,next)=>{console.error(err);res.status(500).json({error:'Ошибка сервера'})});
