@@ -6,6 +6,7 @@ const {Pool}=require('pg');
 const path=require('path');
 
 const app=express();
+app.set('trust proxy', 1);
 const PORT=process.env.PORT||3000;
 const pool=new Pool({connectionString:process.env.DATABASE_URL,ssl:process.env.DATABASE_URL?{rejectUnauthorized:false}:false});
 const ROLES={
@@ -21,7 +22,7 @@ app.use(session({
  store:new pgSession({pool,tableName:'user_sessions',createTableIfMissing:true}),
  secret:process.env.SESSION_SECRET||'CHANGE_ME_NOW',
  resave:false,saveUninitialized:false,
- cookie:{httpOnly:true,sameSite:'lax',secure:process.env.NODE_ENV==='production',maxAge:1000*60*60*24*7}
+ cookie:{httpOnly:true,sameSite:'lax',secure:'auto',maxAge:1000*60*60*24*7}
 }));
 app.use(express.static(path.join(__dirname,'public')));
 
@@ -85,7 +86,10 @@ app.post('/api/login',async(req,res,next)=>{
   const u=q.rows[0];
   if(!u||!u.active||!bcrypt.compareSync(password,u.password_hash))return res.status(401).json({error:'Неверный логин или пароль'});
   req.session.userId=u.id;
-  res.json({user:safe(u)});
+  req.session.save(err=>{
+   if(err)return next(err);
+   res.json({user:safe(u)});
+  });
  }catch(e){next(e)}
 });
 app.post('/api/logout',(req,res)=>req.session.destroy(()=>res.json({ok:true})));
